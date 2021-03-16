@@ -34,7 +34,7 @@ func (e *Exporter) Export() error {
 	e.logger.Info("starting export")
 
 	var wg sync.WaitGroup
-	ch := make(chan influxdb.Point)
+	ch := make(chan *influxdb.Point)
 
 	wg.Add(1)
 
@@ -52,7 +52,7 @@ func (e *Exporter) Export() error {
 	})
 
 	for pt := range ch {
-		bp.AddPoint(&pt)
+		bp.AddPoint(pt)
 	}
 
 	e.logger.WithField("count", len(bp.Points())).Info("writing points")
@@ -67,7 +67,7 @@ func (e *Exporter) Export() error {
 	return nil
 }
 
-func (e *Exporter) exportElectricityConsumption(wg *sync.WaitGroup, ch chan<- influxdb.Point) {
+func (e *Exporter) exportElectricityConsumption(wg *sync.WaitGroup, ch chan<- *influxdb.Point) {
 	defer wg.Done()
 
 	for _, electricityMeterPoint := range e.config.ElectricityMeterPoints {
@@ -120,7 +120,7 @@ func (e *Exporter) exportElectricityConsumption(wg *sync.WaitGroup, ch chan<- in
 				continue
 			}
 
-			ch <- *pt
+			ch <- pt
 		}
 	}
 }
