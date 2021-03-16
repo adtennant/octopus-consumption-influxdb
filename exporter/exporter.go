@@ -36,7 +36,7 @@ func (e *Exporter) Export() error {
 	var wg sync.WaitGroup
 	ch := make(chan *influxdb.Point)
 
-	wg.Add(1)
+	wg.Add(2)
 
 	go func() {
 		wg.Wait()
@@ -44,7 +44,7 @@ func (e *Exporter) Export() error {
 	}()
 
 	go e.exportElectricityConsumption(&wg, ch)
-	//e.exportGasConsumption()
+	go e.exportGasConsumption(&wg, ch)
 
 	bp, _ := influxdb.NewBatchPoints(influxdb.BatchPointsConfig{
 		Database:  e.config.InfluxDB.Database,
@@ -55,7 +55,7 @@ func (e *Exporter) Export() error {
 		bp.AddPoint(pt)
 	}
 
-	e.logger.WithField("count", len(bp.Points())).Info("writing points")
+	e.logger.WithField("count", len(bp.Points())).Info("writing points to influxdb")
 
 	err := e.db.Write(bp)
 	if err != nil {
@@ -70,15 +70,15 @@ func (e *Exporter) Export() error {
 func (e *Exporter) exportElectricityConsumption(wg *sync.WaitGroup, ch chan<- *influxdb.Point) {
 	defer wg.Done()
 
-	for _, electricityMeterPoint := range e.config.ElectricityMeterPoints {
+	for _, meterPoint := range e.config.ElectricityMeterPoints {
 		logFields := map[string]interface{}{
-			"mpan":          electricityMeterPoint.MPAN,
-			"serial_number": electricityMeterPoint.SerialNumber,
+			"mpan":          meterPoint.MPAN,
+			"serial_number": meterPoint.SerialNumber,
 		}
 
 		consumption, err := e.client.GetElecMeterConsumption(
-			electricityMeterPoint.MPAN,
-			electricityMeterPoint.SerialNumber,
+			meterPoint.MPAN,
+			meterPoint.SerialNumber,
 			octopusenergyapi.ConsumptionOption{},
 		)
 		if err != nil {
@@ -90,8 +90,8 @@ func (e *Exporter) exportElectricityConsumption(wg *sync.WaitGroup, ch chan<- *i
 		}
 
 		tags := map[string]string{
-			"mpan":          electricityMeterPoint.MPAN,
-			"serial_number": electricityMeterPoint.SerialNumber,
+			"mpan":          meterPoint.MPAN,
+			"serial_number": meterPoint.SerialNumber,
 		}
 
 		for _, interval := range consumption {
@@ -125,37 +125,60 @@ func (e *Exporter) exportElectricityConsumption(wg *sync.WaitGroup, ch chan<- *i
 	}
 }
 
-/*func (e *Exporter) exportGasConsumption() {
-for _, gasMeterPoint := range e.config.GasMeterPoints {
-	e.logger.
-		WithField("mprn", gasMeterPoint.MPRN).
-		WithField("serial number", gasMeterPoint.SerialNumber).
-		Info("exporting gas consumption")
+func (e *Exporter) exportGasConsumption(wg *sync.WaitGroup, ch chan<- *influxdb.Point) {
+	defer wg.Done()
 
-	consumption, err := e.client.GetElecMeterConsumption(
-		gasMeterPoint.MPRN,
-		gasMeterPoint.SerialNumber,
-		octopusenergyapi.ConsumptionOption{},
-	)
-	if err != nil {
-		e.logger.WithError(err).Error("failed exporting gas consumption")
-		continue
+	for _, meterPoint := range e.config.GasMeterPoints {
+		logFields := map[string]interface{}{
+			"mprn":          meterPoint.MPRN,
+			"serial_number": meterPoint.SerialNumber,
+		}
+
+		consumption, err := e.client.GetGasMeterConsumption(
+			meterPoint.MPRN,
+			meterPoint.SerialNumber,
+			octopusenergyapi.ConsumptionOption{},
+		)
+		if err != nil {
+			e.logger.
+				WithFields(logFields).
+				WithError(err).
+				Error("failed to get gas consumption")
+			continue
+		}
+
+		tags := map[string]string{
+			"mprn":          meterPoint.MPRN,
+			"serial_number": meterPoint.SerialNumber,
+		}
+
+		for _, interval := range consumption {
+			fields := map[string]interface{}{
+				"value": interval.Value,
+			}
+
+			e.logger.
+				WithFields(logFields).
+				WithField("interval_end", interval.IntervalEnd).
+				WithField("value", interval.Value).
+				Info("adding point")
+
+			pt, err := influxdb.NewPoint(
+				"gas_consumption",
+				tags,
+				fields,
+				interval.IntervalEnd,
+			)
+			if err != nil {
+				e.logger.
+					WithFields(logFields).
+					WithField("interval_end", interval.IntervalEnd).
+					WithError(err).
+					Error("failed to create point")
+				continue
+			}
+
+			ch <- pt
+		}
 	}
-
-	/*latest := consumption[0]
-	c.logger.
-		WithField("timestamp", latest.IntervalEnd).
-		Info("found latest gas consumption")
-
-	ch <- prometheus.NewMetricWithTimestamp(
-		latest.IntervalEnd,
-		prometheus.MustNewConstMetric(
-			c.gasConsumption,
-			prometheus.GaugeValue,
-			float64(latest.Value),
-			gasMeterPoint.MPRN,
-			gasMeterPoint.SerialNumber,
-		),
-	)*/
-/*}
-}*/
+}
