@@ -55,6 +55,8 @@ func (e *Exporter) Export() error {
 		bp.AddPoint(&pt)
 	}
 
+	e.logger.WithField("count", len(bp.Points())).Info("writing points")
+
 	err := e.db.Write(bp)
 	if err != nil {
 		return fmt.Errorf("failed to write to influxdb: %v", err)
@@ -96,6 +98,12 @@ func (e *Exporter) exportElectricityConsumption(wg *sync.WaitGroup, ch chan<- in
 			fields := map[string]interface{}{
 				"value": interval.Value,
 			}
+
+			e.logger.
+				WithFields(logFields).
+				WithField("interval_end", interval.IntervalEnd).
+				WithField("value", interval.Value).
+				Info("adding point")
 
 			pt, err := influxdb.NewPoint(
 				"electricity_consumption",
