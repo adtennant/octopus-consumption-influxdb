@@ -11,7 +11,7 @@ import (
 )
 
 type Exporter struct {
-	config *config.Config
+	meterPoints *config.MeterPoints
 
 	client *octopusenergyapi.Client
 	db     influxdb.Client
@@ -19,9 +19,9 @@ type Exporter struct {
 	logger *logrus.Logger
 }
 
-func New(config *config.Config, client *octopusenergyapi.Client, db influxdb.Client, logger *logrus.Logger) *Exporter {
+func New(meterPoints *config.MeterPoints, client *octopusenergyapi.Client, db influxdb.Client, logger *logrus.Logger) *Exporter {
 	return &Exporter{
-		config,
+		meterPoints,
 
 		client,
 		db,
@@ -30,80 +30,60 @@ func New(config *config.Config, client *octopusenergyapi.Client, db influxdb.Cli
 	}
 }
 
-func (e *Exporter) Export() error {
-	e.logger.Info("starting export")
-
-	var wg sync.WaitGroup
-	ch := make(chan *influxdb.Point)
-
-	wg.Add(2)
-
-	go func() {
-		wg.Wait()
-		close(ch)
-	}()
-
-	go e.exportElectricityConsumption(&wg, ch)
-	go e.exportGasConsumption(&wg, ch)
-
+func (e *Exporter) Export(database string) error {
 	bp, _ := influxdb.NewBatchPoints(influxdb.BatchPointsConfig{
-		Database:  e.config.InfluxDB.Database,
+		Database:  database,
 		Precision: "s",
 	})
 
-	for pt := range ch {
+	points, err := e.getElectricityConsumption()
+	if err != nil {
+		return fmt.Errorf("failed to get electricity consumption: %v", err)
+	}
+
+	for _, pt := range points {
 		bp.AddPoint(pt)
 	}
 
-	e.logger.WithField("count", len(bp.Points())).Info("writing points to influxdb")
+	/*points, errs = e.getElectricityConsumption()
+	if len(errs) > 0 {
+		errors = append(errors, errs...)
+	}
 
-	err := e.db.Write(bp)
+	for _, pt := range points {
+		bp.AddPoint(pt)
+	}*/
+
+	err = e.db.Write(bp)
 	if err != nil {
 		return fmt.Errorf("failed to write to influxdb: %v", err)
 	}
 
-	e.logger.Info("export complete")
-
 	return nil
 }
 
-func (e *Exporter) exportElectricityConsumption(wg *sync.WaitGroup, ch chan<- *influxdb.Point) {
-	defer wg.Done()
+func (e *Exporter) getElectricityConsumption() ([]*influxdb.Point, error) {
+	var points []*influxdb.Point
 
-	for _, meterPoint := range e.config.ElectricityMeterPoints {
-		logFields := map[string]interface{}{
-			"mpan":          meterPoint.MPAN,
-			"serial_number": meterPoint.SerialNumber,
-		}
-
+	for _, mp := range e.meterPoints.ElectricityMeterPoints {
 		consumption, err := e.client.GetElecMeterConsumption(
-			meterPoint.MPAN,
-			meterPoint.SerialNumber,
+			mp.MPAN,
+			mp.SerialNumber,
 			octopusenergyapi.ConsumptionOption{},
 		)
 		if err != nil {
-			e.logger.
-				WithFields(logFields).
-				WithError(err).
-				Error("failed to get electricity consumption")
-			continue
+			return nil, fmt.Errorf("failed to get electricity consumption for %s/%s: %v", mp.MPAN, mp.SerialNumber, err)
 		}
 
 		tags := map[string]string{
-			"mpan":          meterPoint.MPAN,
-			"serial_number": meterPoint.SerialNumber,
+			"mpan":          mp.MPAN,
+			"serial_number": mp.SerialNumber,
 		}
 
 		for _, interval := range consumption {
 			fields := map[string]interface{}{
 				"value": interval.Value,
 			}
-
-			e.logger.
-				WithFields(logFields).
-				WithField("interval_end", interval.IntervalEnd).
-				WithField("value", interval.Value).
-				Info("adding point")
 
 			pt, err := influxdb.NewPoint(
 				"electricity_consumption",
@@ -112,23 +92,20 @@ func (e *Exporter) exportElectricityConsumption(wg *sync.WaitGroup, ch chan<- *i
 				interval.IntervalEnd,
 			)
 			if err != nil {
-				e.logger.
-					WithFields(logFields).
-					WithField("interval_end", interval.IntervalEnd).
-					WithError(err).
-					Error("failed to create point")
-				continue
+				return nil, fmt.Errorf("failed to create point at %s for %s/%s: %v", interval.IntervalEnd, mp.MPAN, mp.SerialNumber, err)
 			}
 
-			ch <- pt
+			points = append(points, pt)
 		}
 	}
+
+	return points, nil
 }
 
 func (e *Exporter) exportGasConsumption(wg *sync.WaitGroup, ch chan<- *influxdb.Point) {
 	defer wg.Done()
 
-	for _, meterPoint := range e.config.GasMeterPoints {
+	for _, meterPoint := range e.meterPoints.GasMeterPoints {
 		logFields := map[string]interface{}{
 			"mprn":          meterPoint.MPRN,
 			"serial_number": meterPoint.SerialNumber,
